@@ -22,4 +22,4 @@ output: Output image.
 
 Typical parameters are sigma = 0.5, k = 500, min = 20.
 Larger values for k result in larger components in the result.
-
+./segment .5 500 35000  mercurycolor_phpuG4RQy.ppm  mercurycolor_out.ppm

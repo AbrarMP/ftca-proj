@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #include <fstream>
 #include "image.h"
 #include "misc.h"
+#include <iostream>
 
 #define BUF_SIZE 256
 
@@ -172,10 +173,28 @@ static image<rgb> *loadPPM(const char *name) {
 static void savePPM(image<rgb> *im, const char *name) {
   int width = im->width();
   int height = im->height();
-  std::ofstream file(name, std::ios::out | std::ios::binary);
+  std::FILE* file;
+  file = fopen(name, "w");
+  // std::ofstream file(name, std::ios::out | std::ios::binary);
 
-  file << "P6\n" << width << " " << height << "\n" << UCHAR_MAX << "\n";
-  file.write((char *)imPtr(im, 0, 0), width * height * sizeof(rgb));
+  fprintf(file, "P3\n%d %d\n%d\n", width, height, UCHAR_MAX);// file << "P3\n" << width << " " << height << "\n" << UCHAR_MAX << "\n";
+  for (int y = 0; y < height; y++) {
+    for (int x = 0; x < width; x++) {
+      fprintf(file, "%d\n", imRef(im, x, y).r);
+      fprintf(file, "%d\n", imRef(im, x, y).r);
+      fprintf(file, "%d\n", imRef(im, x, y).r);
+      
+    }
+  }
+  // file.write((char *)imPtr(im, 0, 0), width * height * sizeof(rgb));
+  // printf("%d\n", imRef(im,0,0).r);
+  // printf("%d\n", imRef(im,0,0).g);
+  // printf("%d\n", imRef(im,0,0).b);
+
+  // {
+  //   file << *imPtr(im, )
+  // })
+  // file.write((char *)imPtr(im, 0, 0), width * height * sizeof(rgb));
 }
 
 template <class T>

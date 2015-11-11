@@ -135,9 +135,14 @@ image<rgb> *segment_image(image<rgb> *im, float sigma, float c, int min_size,
 
   // pick random colors for each component
   rgb *colors = new rgb[width*height];
-  for (int i = 0; i < width*height; i++)
-    colors[i] = random_rgb();
-  
+  colors[0].r = 255;
+  colors[0].g = 255;
+  colors[0].b = 255;
+  for (int i = 1; i < width*height; i++){
+    colors[i].r =i-1;
+  colors[i].g = i-1;
+  colors[i].b = i-1;
+  }
   for (int y = 0; y < height; y++) {
     for (int x = 0; x < width; x++) {
       int comp = u->find(y * width + x);
