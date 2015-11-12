@@ -28,6 +28,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #include "image.h"
 #include "misc.h"
 #include <iostream>
+#include <fstream>
+
+
 
 #define BUF_SIZE 256
 
@@ -196,6 +199,8 @@ static void savePPM(image<rgb> *im, const char *name) {
   // })
   // file.write((char *)imPtr(im, 0, 0), width * height * sizeof(rgb));
 }
+
+
 
 template <class T>
 void load_image(image<T> **im, const char *name) {
