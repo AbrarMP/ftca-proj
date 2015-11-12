@@ -8,13 +8,13 @@ LINK   = -lm
 .cpp.o:
 	$(CPP) $(CFLAGS) -c $< -o $@
 
-all: segment
+all: main
 
-segment: segment.cpp segment-image.h canny.h segment-graph.h disjoint-set.h
-	$(CPP) $(CFLAGS) -o segment segment.cpp $(LINK)
+main: main.cpp segment-image.h canny.h segment-graph.h disjoint-set.h
+	$(CPP) $(CFLAGS) -o main main.cpp $(LINK)
 
 clean:
-	/bin/rm -f segment *.o
+	/bin/rm -f main *.o
 
 clean-all: clean
 	/bin/rm -f *~ 
