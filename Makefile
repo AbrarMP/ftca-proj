@@ -2,7 +2,7 @@ INCDIR = -I.
 DBG    = -g
 OPT    = -O3
 CPP    = g++
-CFLAGS = $(DBG) $(OPT) $(INCDIR)
+CFLAGS = $(DBG)  $(INCDIR)
 LINK   = -lm 
 
 .cpp.o:
