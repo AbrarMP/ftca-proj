@@ -52,6 +52,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 int *done;
 int *pids;
 
+
+
 typedef short int pixel_t;
 static pixel_t* image_to_pixel_t(image<rgb>* im, int width, int height)
 {
@@ -108,13 +110,20 @@ int main(int argc, char **argv) {
   float k = 500.0;
   int min_size = 35000;
 
+
+  image<rgb> *input = loadPPM(argv[1]); 
+  const int width = input->width();
+  const int height = input->height(); 
+  image<rgb> *seg;
+  pixel_t * canny_in, *ellipse_in;
+
 //variables to set up shared memory pointer
   int shmid;
   int *shm_ptr;
   key_t key=12345;
 
 //setting up the shared memory pointer to 'done' variable
-  shmid=shmget(key,4*sizeof(int),0666|IPC_CREAT);
+  shmid=shmget(key,2*sizeof(int),0666|IPC_CREAT);
    
   if (shmid < 0)
   {
@@ -131,20 +140,68 @@ int main(int argc, char **argv) {
   }
 
   done = shm_ptr;
-  pids = shm_ptr+2;
-  pids[0] = pids[1] = 1;
 
-	int mycpu = 0;
+
+//also need to get shared memory pointer for child data structures:
+//namely image<rgb> input, image<rbg> segment, pixel_t canny_in, pixel_t ellipse_in
+  int shmid_seg, shmid_canny, shmid_ellipse;
+  image<rgb> *shm_ptr_seg;
+  pixel_t *shm_ptr_canny, *shm_ptr_ellipse;
+  key_t key_seg = 12346;
+  key_t key_canny = 12347;
+  key_t key_ellipse = 12348;
+
+  shmid_seg = shmget(key_seg, width*height*sizeof(image<rgb>),0666|IPC_CREAT);
+  if(shmid<0){
+    perror("shmget seg");
+    exit(1);
+  }
+  shm_ptr_seg=(image<rgb> *)shmat(shmid,(void *)0,0);
+
+  if(shm_ptr_seg == (image<rgb> *)(-1)){
+    perror("shmat:shm_ptr_seg");
+    exit(1);
+  }
+  image<rgb>* seg_child = shm_ptr_seg;
+  
+
+  shmid_canny = shmget(key_canny, width*height*sizeof(pixel_t),0666|IPC_CREAT);
+  if(shmid<0){
+    perror("shmget canny");
+    exit(1);
+  }
+  shm_ptr_canny=(pixel_t *)shmat(shmid,(void *)0,0);
+
+  if(shm_ptr_canny == (pixel_t *)(-1)){
+    perror("shmat:shm_ptr_canny");
+    exit(1);
+  }
+  pixel_t *canny_child = shm_ptr_canny;
+
+
+  
+  shmid_ellipse = shmget(key_ellipse, width*height*sizeof(pixel_t),0666|IPC_CREAT);
+  if(shmid<0){
+    perror("shmget ellipse");
+    exit(1);
+  }
+  shm_ptr_ellipse=(pixel_t *)shmat(shmid,(void *)0,0);
+
+  if(shm_ptr_ellipse == (pixel_t *)(-1)){
+    perror("shmat:shm_ptr_ellipse");
+    exit(1);
+  }
+  pixel_t *ellipse_child = shm_ptr_ellipse;
+  
+
+  int mycpu = 0;
   int othercpu = 0;
 //processes fork here
   pid_t pid = fork();
 
   cpu_set_t mask;
-
 /* CPU_ZERO initializes all the bits in the mask to zero. */ 
   CPU_ZERO( &mask );
-
-
   if(pid==0){
     //set mask such that this process can only be scheduled on CPU0
     CPU_SET(0, &mask);
@@ -154,11 +211,11 @@ int main(int argc, char **argv) {
     mycpu = 0;
     othercpu = 1;
     done[mycpu] = 0;
-    while(pids[othercpu] == 0){
-      ;
-    }
-    pids[mycpu] = pids[othercpu]-1;
-    printf("child pid is %d\n", pids[mycpu]);
+    // while(pids[othercpu] == 0){
+    //   ;
+    // }
+    // pids[mycpu] = pids[othercpu]-1;
+    // printf("child pid is %d\n", pids[mycpu]);
     
   } 
     else{
@@ -171,35 +228,80 @@ int main(int argc, char **argv) {
     mycpu=1;
     othercpu = 0;
     done[mycpu] = 0;
-    pids[mycpu] = pid;
-    printf("parent pid is %d\n", pids[mycpu]);
+    // pids[mycpu] = pid;
+    // printf("parent pid is %d\n", pids[mycpu]);
   }  
 
 
 //both threads run this code
-  printf("Process: %d is loading input image.\n", pid);
-  image<rgb> *input = loadPPM(argv[1]);
-
-  const int width = input->width();
-  const int height = input->height();	
-  printf("Process: %d is processing\n", pid);
+  printf("CPU %d is processing image.\n", mycpu);
   int num_ccs; 
-  image<rgb> *seg = segment_image(input, sigma, k, min_size, &num_ccs); 
-  pixel_t* canny_in = image_to_pixel_t(seg, width, height);
-  pixel_t *ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
+
+segment_image:
+//checkpoint here
+  if(mycpu==0){
+    seg_child = segment_image(input, sigma, k, min_size, &num_ccs); 
+    canny_child = image_to_pixel_t(seg_child, width, height);
+    ellipse_child = canny_edge_detection(canny_child, width, height, 45, 50, 1.5f);
+    done[mycpu] = 1;
+    printf("CPU %d is done processing image\n", mycpu);
+
+    printf("Done array in CPU 0: %d %d\n", done[0], done[1]);
+    while(done[othercpu] != 1){
+      if(done[othercpu] < 0)
+        goto segment_image;
+    }
+  } 
+    else{
+
+    seg = segment_image(input, sigma, k, min_size, &num_ccs); 
+    canny_in = image_to_pixel_t(seg, width, height);
+    ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
+    done[mycpu] = 1;
+    printf("CPU %d is done processing image\n", mycpu);
+    printf("Waiting for CPU %d\n", othercpu);
+
+    printf("Done array in CPU 1: %d %d\n", done[0], done[1]);
+    // while(done[othercpu] != 1){
+    //   ;
+    // }
+    printf("CPU %d done\n", othercpu);
+    int errors = 0;
+    // for(int x=0; x<width;x++)
+    //   for(int y=0; y<height; y++){
+    //     if(imRef(input,x,y).r != imRef(input_child,x,y).r)
+    //       errors++;
+    //     if(imRef(input,x,y).g != imRef(input_child,x,y).g)
+    //       errors++;
+    //     if(imRef(input,x,y).b != imRef(input_child,x,y).b)
+    //       errors++;
+    // }
+    printf("%d errors detected\n", errors);
+
+  }
+  // image<rgb> *input = loadPPM(argv[1]); 
+  // const int width = input->width();
+  // const int height = input->height();	
 
 
-  if(pid==0){
-    //child will hang
+  // printf("Process: %d is processing\n", pid);
+
+  // image<rgb> *seg = segment_image(input, sigma, k, min_size, &num_ccs); 
+  // pixel_t* canny_in = image_to_pixel_t(seg, width, height);
+  // pixel_t *ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
+
+  done[mycpu]=0;
+  if(mycpu==0){
+    //child 
     // hang(1);
-    savePPM3(ellipse_in, width, height, "ellipse_in_child.ppm");
-    savePPM(seg, "canny_in_child.ppm");
+    savePPM3(ellipse_child, width, height, "ellipse_in_child.ppm");
+    savePPM(seg_child, "canny_in_child.ppm");
     printf("CPU %d created files canny_in_child.ppm and ellipse_in_child.ppm\n", mycpu);
  
 
   } else{
     //parent will hang
-    hang(1);
+    // hang(1);
     savePPM3(ellipse_in, width, height, "ellipse_in.ppm");
     savePPM(seg, "canny_in.ppm");
     printf("CPU %d created files canny_in.ppm and ellipse_in.ppm\n", mycpu);
@@ -231,6 +333,10 @@ int main(int argc, char **argv) {
   free (ellipse_in);
   printf("--Done!--\n");
 
+  if(mycpu==1)
+  kill(pid, SIGKILL);
+else
+  sleep(10);
   //checking to make sure that if parent/child is killed due to hanging, other can still fork and continue with computation 
   pid = fork();
   printf("respawn\n");
