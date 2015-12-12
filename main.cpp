@@ -35,6 +35,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+
+#include <errno.h>
  
 
 #include <sys/mman.h>
@@ -45,6 +47,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #define TRUE  1
 #define FALSE 0 
 
+#define WAIT_TIME 6
 // typedef int bool;
 int *done;
 int *pids;
@@ -187,47 +190,50 @@ int main(int argc, char **argv) {
 
 
   if(pid==0){
+    //child will hang
+    // hang(1);
     savePPM3(ellipse_in, width, height, "ellipse_in_child.ppm");
     savePPM(seg, "canny_in_child.ppm");
     printf("CPU %d created files canny_in_child.ppm and ellipse_in_child.ppm\n", mycpu);
-    // hang(2048);
-  
+ 
 
   } else{
+    //parent will hang
+    hang(1);
     savePPM3(ellipse_in, width, height, "ellipse_in.ppm");
     savePPM(seg, "canny_in.ppm");
     printf("CPU %d created files canny_in.ppm and ellipse_in.ppm\n", mycpu);
-    printf("CPU %d is going to hang\n", mycpu);
-    sleep(100);
+
   }  
 
 //first process to finish will check if the other is done
   done[mycpu] = 1;
   printf("CPU %d done\n", mycpu);
 
-
-  if(done[othercpu] == 0){
-    printf("CPU %d not done yet, lets wait\n", othercpu);
-    sleep(6);
-    if(done[othercpu]==0){
+  if(done[othercpu]==0){
+    // printf("CPU %d not done yet, lets wait\n", othercpu);
+    sleep(WAIT_TIME);
+    if(done[othercpu]==0){ //if still not done, we kill it
       printf("CPU %d hanging\n", othercpu);
       printf("Attempting to kill PID: %d\n", pids[othercpu]);
-      sleep(5);
-  //this doesn't quite work yet, need to find a way to kill processes that hang
-      kill(pids[othercpu], SIGTERM);
-      printf("PID: %d killed\n", pids[othercpu]);
+      
+      if(pid==0){ //if child, kill parent
+        kill(getppid(), SIGTERM);
+      }
+      else //if parent, kill child
+        kill(pid, SIGTERM);
     }
   }
-
-
-
-
 
   free (seg);
   free (input);
   free (canny_in);
   free (ellipse_in);
   printf("--Done!--\n");
+
+  //checking to make sure that if parent/child is killed due to hanging, other can still fork and continue with computation 
+  pid = fork();
+  printf("respawn\n");
   return 0;
 }
 
