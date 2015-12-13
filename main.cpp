@@ -47,14 +47,25 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
 #define TRUE  1
 #define FALSE 0 
 
-#define WAIT_TIME 6
+#define MAX_ERROR 3500
+
+#define MAX_RETRY 3
+#define WAIT_TIME 5
 // typedef int bool;
-int *done;
-int *pids;
-
-
 
 typedef short int pixel_t;
+
+int *done;
+int* done_seg;
+int* done_canny;
+int* done_writing;
+int *pids;
+image<rgb> *input_child, *seg_child;
+pixel_t *canny_child, *ellipse_child;
+
+
+
+
 static pixel_t* image_to_pixel_t(image<rgb>* im, int width, int height)
 {
   pixel_t *out = (pixel_t*)malloc(width*height*sizeof(pixel_t));
@@ -95,6 +106,122 @@ void hang(int a){
             array[i]+=j;
 }
 
+void setup_shm(int width, int height){
+
+//variables to set up shared memory pointer
+  int shmid;
+  int *shm_ptr;
+  key_t key=12345;
+
+//setting up the shared memory pointer to 'done' variable
+  shmid=shmget(key,8*sizeof(int),0666|IPC_CREAT);
+   
+  if (shmid < 0){
+      perror("shmget");
+      exit(1);
+  }
+  shm_ptr=(int *)shmat(shmid,(void *)0,0);
+   
+  if (shm_ptr == (int *)(-1)){
+      perror("shmat:shm_ptr");
+      exit(1);
+  }
+
+  done = shm_ptr;
+  done_seg = shm_ptr+2;
+  done_canny = shm_ptr+4;
+  done_writing = shm_ptr+6;
+
+
+//also need to get shared memory pointer for child data structures:
+//namely image<rgb> input, image<rbg> segment, pixel_t canny_in, pixel_t ellipse_in
+  int shmid_input, shmid_seg, shmid_canny, shmid_ellipse;
+  image<rgb> *shm_ptr_seg, *shm_ptr_input;
+  pixel_t *shm_ptr_canny, *shm_ptr_ellipse;
+  key_t key_seg = 12346;
+  key_t key_canny = 12347;
+  key_t key_ellipse = 12348;
+  key_t key_input = 12349;
+
+  shmid_input = shmget(key_input, width*height*sizeof(image<rgb>),0666|IPC_CREAT);
+  if(shmid_input<0){
+    perror("shmget input");
+    exit(1);
+  }
+  shm_ptr_input=(image<rgb> *)shmat(shmid_input,(void *)0,0);
+
+  if(shm_ptr_input == (image<rgb> *)(-1)){
+    perror("shmat:shm_ptr_input");
+    exit(1);
+  }
+  input_child = shm_ptr_input;
+
+
+  shmid_seg = shmget(key_seg, width*height*sizeof(image<rgb>),0666|IPC_CREAT);
+  if(shmid_seg<0){
+    perror("shmget seg");
+    exit(1);
+  }
+  shm_ptr_seg=(image<rgb> *)shmat(shmid_seg,(void *)0,0);
+
+  if(shm_ptr_seg == (image<rgb> *)(-1)){
+    perror("shmat:shm_ptr_seg");
+    exit(1);
+  }
+  seg_child = shm_ptr_seg;
+  
+
+  shmid_canny = shmget(key_canny, width*height*sizeof(pixel_t),0666|IPC_CREAT);
+  if(shmid_canny<0){
+    perror("shmget canny");
+    exit(1);
+  }
+  shm_ptr_canny=(pixel_t *)shmat(shmid_canny,(void *)0,0);
+
+  if(shm_ptr_canny == (pixel_t *)(-1)){
+    perror("shmat:shm_ptr_canny");
+    exit(1);
+  }
+  canny_child = shm_ptr_canny;
+
+
+  shmid_ellipse = shmget(key_ellipse, width*height*sizeof(pixel_t),0666|IPC_CREAT);
+  if(shmid_ellipse<0){
+    perror("shmget ellipse");
+    exit(1);
+  }
+  shm_ptr_ellipse=(pixel_t *)shmat(shmid_ellipse,(void *)0,0);
+
+  if(shm_ptr_ellipse == (pixel_t *)(-1)){
+    perror("shmat:shm_ptr_ellipse");
+    exit(1);
+  }
+  ellipse_child = shm_ptr_ellipse;
+
+
+}
+
+void set_cpu_affinity(cpu_set_t mask, pid_t pid, int &mycpu, int &othercpu){
+  /* CPU_ZERO initializes all the bits in the mask to zero. */ 
+  CPU_ZERO( &mask );
+  if(pid==0){
+    //set mask such that this process can only be scheduled on CPU0
+    CPU_SET(0, &mask);
+    if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 )
+        printf("WARNING: Could not set CPU Affinity, continuing...\n");
+    mycpu = 0;
+    othercpu = 1;  
+  } 
+    else{
+
+   //set mask such that this process can only be scheduled on CPU1
+    CPU_SET(1, &mask); 
+    if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 )
+        printf("WARNING: Could not set CPU Affinity, continuing...\n");
+    mycpu=1;
+    othercpu = 0;
+  } 
+}
 
 int main(int argc, char **argv) {
   if (argc != 2) {
@@ -110,163 +237,188 @@ int main(int argc, char **argv) {
   float k = 500.0;
   int min_size = 35000;
 
-
-  image<rgb> *input = loadPPM(argv[1]); 
-  const int width = input->width();
-  const int height = input->height(); 
-  image<rgb> *seg;
+  image<rgb> *input, *seg;
   pixel_t * canny_in, *ellipse_in;
+  int num_ccs; 
+  int width, height;
+  input = loadPPM(argv[1]); 
+  width = input->width();
+  height = input->height(); 
 
-//variables to set up shared memory pointer
-  int shmid;
-  int *shm_ptr;
-  key_t key=12345;
-
-//setting up the shared memory pointer to 'done' variable
-  shmid=shmget(key,2*sizeof(int),0666|IPC_CREAT);
-   
-  if (shmid < 0)
-  {
-      perror("shmget");
-      exit(1);
-  }
-   
-  shm_ptr=(int *)shmat(shmid,(void *)0,0);
-   
-  if (shm_ptr == (int *)(-1))
-  {
-      perror("shmat:shm_ptr");
-      exit(1);
-  }
-
-  done = shm_ptr;
-
-
-//also need to get shared memory pointer for child data structures:
-//namely image<rgb> input, image<rbg> segment, pixel_t canny_in, pixel_t ellipse_in
-  int shmid_seg, shmid_canny, shmid_ellipse;
-  image<rgb> *shm_ptr_seg;
-  pixel_t *shm_ptr_canny, *shm_ptr_ellipse;
-  key_t key_seg = 12346;
-  key_t key_canny = 12347;
-  key_t key_ellipse = 12348;
-
-  shmid_seg = shmget(key_seg, width*height*sizeof(image<rgb>),0666|IPC_CREAT);
-  if(shmid<0){
-    perror("shmget seg");
-    exit(1);
-  }
-  shm_ptr_seg=(image<rgb> *)shmat(shmid,(void *)0,0);
-
-  if(shm_ptr_seg == (image<rgb> *)(-1)){
-    perror("shmat:shm_ptr_seg");
-    exit(1);
-  }
-  image<rgb>* seg_child = shm_ptr_seg;
-  
-
-  shmid_canny = shmget(key_canny, width*height*sizeof(pixel_t),0666|IPC_CREAT);
-  if(shmid<0){
-    perror("shmget canny");
-    exit(1);
-  }
-  shm_ptr_canny=(pixel_t *)shmat(shmid,(void *)0,0);
-
-  if(shm_ptr_canny == (pixel_t *)(-1)){
-    perror("shmat:shm_ptr_canny");
-    exit(1);
-  }
-  pixel_t *canny_child = shm_ptr_canny;
-
-
-  
-  shmid_ellipse = shmget(key_ellipse, width*height*sizeof(pixel_t),0666|IPC_CREAT);
-  if(shmid<0){
-    perror("shmget ellipse");
-    exit(1);
-  }
-  shm_ptr_ellipse=(pixel_t *)shmat(shmid,(void *)0,0);
-
-  if(shm_ptr_ellipse == (pixel_t *)(-1)){
-    perror("shmat:shm_ptr_ellipse");
-    exit(1);
-  }
-  pixel_t *ellipse_child = shm_ptr_ellipse;
-  
+  setup_shm(width, height);
+  for(int i=0;i<8;i++)
+    done[i]=0;
 
   int mycpu = 0;
   int othercpu = 0;
-//processes fork here
-  pid_t pid = fork();
+  int wait_count = 0;
+  int retries = 0;
+  bool killed = 0;
+  bool to_retry = 0;
+  int errors = 0;
 
   cpu_set_t mask;
+//processes fork here
+  pid_t pid;
+  pid = fork();
+
+
 /* CPU_ZERO initializes all the bits in the mask to zero. */ 
-  CPU_ZERO( &mask );
-  if(pid==0){
-    //set mask such that this process can only be scheduled on CPU0
-    CPU_SET(0, &mask);
-    if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 ){
-        printf("WARNING: Could not set CPU Affinity, continuing...\n");
-    }
-    mycpu = 0;
-    othercpu = 1;
-    done[mycpu] = 0;
-    // while(pids[othercpu] == 0){
-    //   ;
-    // }
-    // pids[mycpu] = pids[othercpu]-1;
-    // printf("child pid is %d\n", pids[mycpu]);
-    
-  } 
-    else{
+  set_cpu_affinity(mask, pid, mycpu, othercpu);
 
-   //set mask such that this process can only be scheduled on CPU1
-    CPU_SET(1, &mask); 
-    if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 ){
-        printf("WARNING: Could not set CPU Affinity, continuing...\n");
-    }
-    mycpu=1;
-    othercpu = 0;
-    done[mycpu] = 0;
-    // pids[mycpu] = pid;
-    // printf("parent pid is %d\n", pids[mycpu]);
-  }  
+  // CPU_ZERO( &mask );
+  // if(pid==0){
+  //   //set mask such that this process can only be scheduled on CPU0
+  //   CPU_SET(0, &mask);
+  //   if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 )
+  //       printf("WARNING: Could not set CPU Affinity, continuing...\n");
+  //   mycpu = 0;
+  //   othercpu = 1;  
+  // } 
+  //   else{
 
+  //  //set mask such that this process can only be scheduled on CPU1
+  //   CPU_SET(1, &mask); 
+  //   if( sched_setaffinity( pid, sizeof(mask), &mask ) == -1 )
+  //       printf("WARNING: Could not set CPU Affinity, continuing...\n");
+  //   mycpu=1;
+  //   othercpu = 0;
+  // }  
 
 //both threads run this code
-  printf("CPU %d is processing image.\n", mycpu);
-  int num_ccs; 
+segment:
+  done_seg[mycpu] = 0;
+  done[mycpu]=0;
+  wait_count = 0;
+  to_retry = 0;
+  seg = segment_image(input, sigma, k, min_size, &num_ccs); 
+  canny_in = image_to_pixel_t(seg, width, height);
+//chile copies results to shared memory for comparison later
+  if(mycpu==0){
+    for(int i=0;i<width*height-5;i++)
+      canny_child[i] = canny_in[i];
+    for(int i=width*height-5;i<width*height;i++)
+      canny_child[i] = 7;
+  }
+  // else
+      // sleep(6);
+  done_seg[mycpu]=1;
+  printf("CPU %d done with seg\n", mycpu);
 
-segment_image:
+//check to make sure other is not hanging
+  while(done_seg[othercpu]==0){
+    sleep(1);
+    wait_count++;
+    if(wait_count == WAIT_TIME){
+      // if(retries <= MAX_RETRY)
+      to_retry = 1;
+      retries++;
+      printf("CPU %d is hanging\n", othercpu);
+      if(mycpu==0) { //if child, kill parent
+        kill(getppid(), SIGTERM);
+        printf("CPU %d:parent, killed\n", othercpu);
+        break;
+      }else{ //if parent, kill child
+        kill(pid, SIGTERM);
+        printf("CPU %d:child, killed\n", othercpu);
+        break;
+      }
+    }
+  }
+
+//after a process has hanged and been killed
+  if(to_retry == 1){
+
+    if(retries > MAX_RETRY){ //no more retrying, just skip
+      pid = fork();
+      set_cpu_affinity(mask, pid, mycpu, othercpu);
+      goto segment_done;
+    }else{
+
+    pid = fork();
+    set_cpu_affinity(mask, pid, mycpu, othercpu);
+    goto segment;
+    }
+  }
+
+//data mismatch condition/both CPU's still up
+  if(mycpu==1){
+    to_retry = 0;
+    errors = 0;
+    for(int i=0; i<width*height;i++)
+      if(canny_in[i]!=canny_child[i])
+        errors++;
+    
+    printf("%d errors detected in canny\n", errors);
+    if(errors >= MAX_ERROR){
+      retries++;
+      if(retries <= MAX_RETRY){
+        done[mycpu] = -1;
+        goto segment;
+      }
+      done[mycpu] = 1;
+    }
+  } else{
+    while(done[othercpu] == 0)
+      ;
+    if(done[othercpu] == -1)
+      goto segment;
+  }
+
+segment_done:
+  printf("%d retries for segment\n", retries);
+
+canny:
+  done_canny[mycpu] = 0;
+  done[mycpu]=0;
+  wait_count = 0;
+  to_retry = 0;
+
 //checkpoint here
   if(mycpu==0){
-    seg_child = segment_image(input, sigma, k, min_size, &num_ccs); 
-    canny_child = image_to_pixel_t(seg_child, width, height);
-    ellipse_child = canny_edge_detection(canny_child, width, height, 45, 50, 1.5f);
-    done[mycpu] = 1;
-    printf("CPU %d is done processing image\n", mycpu);
 
-    printf("Done array in CPU 0: %d %d\n", done[0], done[1]);
-    while(done[othercpu] != 1){
-      if(done[othercpu] < 0)
-        goto segment_image;
-    }
-  } 
-    else{
+    seg = segment_image(input, sigma, k, min_size, &num_ccs); 
+    canny_in = image_to_pixel_t(seg, width, height);
+    for(int i=0;i<width*height;i++)
+      canny_child[i] = canny_in[i];
+    done_seg[mycpu] = 1;
+    printf("Done with seg\n");
+    
+
+    ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
+    for(int i=0;i<width*height;i++)
+      ellipse_child[i] = ellipse_in[i];
+    done_canny[mycpu] = 1;
+    printf("Done with canny\n");
+
+    printf("b. CPU %d is done processing image\n", mycpu);
+
+    // for(int i=0;i<width*height;i++)
+    //   seg_child[i] = seg[i];
+
+
+
+
+    // printf("b. Done array in CPU %d: %d %d\n", mycpu, done[0], done[1]);
+  //   while(done[othercpu] != 1){
+  //     if(done[othercpu] < 0)
+  //       goto segment_image;
+  //   }
+  }else{
 
     seg = segment_image(input, sigma, k, min_size, &num_ccs); 
     canny_in = image_to_pixel_t(seg, width, height);
     ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
     done[mycpu] = 1;
-    printf("CPU %d is done processing image\n", mycpu);
-    printf("Waiting for CPU %d\n", othercpu);
+    printf("b. CPU %d is done processing image\n", mycpu);
+    printf("b. Waiting for CPU %d\n", othercpu);
 
-    printf("Done array in CPU 1: %d %d\n", done[0], done[1]);
+    printf("b. Done array in CPU %d: %d %d\n", mycpu, done[0], done[1]);
     // while(done[othercpu] != 1){
     //   ;
     // }
-    printf("CPU %d done\n", othercpu);
-    int errors = 0;
+    // printf("b. CPU %d done\n", othercpu);
+    // int errors = 0;
     // for(int x=0; x<width;x++)
     //   for(int y=0; y<height; y++){
     //     if(imRef(input,x,y).r != imRef(input_child,x,y).r)
@@ -276,12 +428,12 @@ segment_image:
     //     if(imRef(input,x,y).b != imRef(input_child,x,y).b)
     //       errors++;
     // }
-    printf("%d errors detected\n", errors);
+    // printf("%d errors detected\n", errors);
 
   }
   // image<rgb> *input = loadPPM(argv[1]); 
   // const int width = input->width();
-  // const int height = input->height();	
+  // const int height = input->height();  
 
 
   // printf("Process: %d is processing\n", pid);
@@ -290,52 +442,93 @@ segment_image:
   // pixel_t* canny_in = image_to_pixel_t(seg, width, height);
   // pixel_t *ellipse_in = canny_edge_detection(canny_in, width, height, 45, 50, 1.5f);
 
-  done[mycpu]=0;
   if(mycpu==0){
     //child 
-    // hang(1);
+    printf("blooh blah\n");
+    // savePPM(seg, "canny_in_child.ppm");
+    savePPM3(canny_child, width, height, "canny2_in_child.ppm");
+
     savePPM3(ellipse_child, width, height, "ellipse_in_child.ppm");
-    savePPM(seg_child, "canny_in_child.ppm");
+    done_writing[mycpu]=1;
     printf("CPU %d created files canny_in_child.ppm and ellipse_in_child.ppm\n", mycpu);
  
 
   } else{
-    //parent will hang
-    // hang(1);
+    //parent 
     savePPM3(ellipse_in, width, height, "ellipse_in.ppm");
-    savePPM(seg, "canny_in.ppm");
+    savePPM3(canny_in, width, height, "canny2_in.ppm");
+
+    // savePPM(seg, "canny_in.ppm");
     printf("CPU %d created files canny_in.ppm and ellipse_in.ppm\n", mycpu);
 
   }  
 
 //first process to finish will check if the other is done
+  sleep(5);
   done[mycpu] = 1;
-  printf("CPU %d done\n", mycpu);
-
-  if(done[othercpu]==0){
-    // printf("CPU %d not done yet, lets wait\n", othercpu);
-    sleep(WAIT_TIME);
-    if(done[othercpu]==0){ //if still not done, we kill it
-      printf("CPU %d hanging\n", othercpu);
-      printf("Attempting to kill PID: %d\n", pids[othercpu]);
+  // if(done[othercpu]==0){
+  //   printf("CPU %d not done yet, lets wait\n", othercpu);
+  //   sleep(WAIT_TIME);
+  //   if(done[othercpu]==0){ //if still not done, we kill it
+  //     printf("CPU %d hanging\n", othercpu);
+  //     printf("Attempting to kill PID: %d\n", pids[othercpu]);
       
-      if(pid==0){ //if child, kill parent
-        kill(getppid(), SIGTERM);
-      }
-      else //if parent, kill child
-        kill(pid, SIGTERM);
+  //     if(pid==0){ //if child, kill parent
+  //       kill(getppid(), SIGTERM);
+  //       printf("Parent killed\n");
+  //     }
+  //     else{ //if parent, kill child
+  //       kill(pid, SIGTERM);
+  //       printf("Child killed\n");
+  //     }
+
+  //   }
+  // }
+
+
+//synchronize here (both should be done)
+  if(mycpu==1)
+  {
+    printf("Waiting for CPU %d to finish\n", othercpu);
+    
+    while(done[othercpu]!=1){
+      sleep(1);
+      printf("Waiting for CPU %d to finish\n", othercpu);
     }
+    int errors = 0;
+    for(int i=0; i<width*height;i++)
+      if(canny_in[i]!=canny_child[i])
+        errors++;
+    
+    printf("%d errors detected in canny\n", errors);
+
+    errors = 0; 
+    for(int i=0; i<width*height;i++)
+      if(ellipse_in[i]!=ellipse_child[i])
+        errors++;
+    
+    printf("%d errors detected in ellipse\n", errors);
   }
 
-  free (seg);
-  free (input);
+  if(mycpu==1){
+    free (input);
+  }
+
   free (canny_in);
   free (ellipse_in);
+  free (seg);
+  
   printf("--Done!--\n");
 
-  if(mycpu==1)
-  kill(pid, SIGKILL);
-else
+  if(mycpu==1){
+    printf("Has CPU %d finished writing? Done: %d\n", othercpu, done[othercpu]);
+    while(done[othercpu]!=1){
+      sleep(1);
+      printf("Waiting for CPU %d to finish writing\n", othercpu);
+    }
+    kill(pid, SIGKILL);
+  }
+    else
   sleep(10);
   //checking to make sure that if parent/child is killed due to hanging, other can still fork and continue with computation 
   pid = fork();
