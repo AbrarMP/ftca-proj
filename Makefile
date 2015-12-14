@@ -1,6 +1,6 @@
 INCDIR = -I.
 DBG    = -g
-OPT    = -O2 -static
+OPT    = -o2 -static
 CPP    = g++
 CPPPPC = powerpc-e500v2-linux-gnuspe-g++
 CFLAGS = $(DBG)  $(OPT) $(INCDIR)
