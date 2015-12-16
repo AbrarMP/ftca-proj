@@ -61,5 +61,6 @@ int main(int argc, char **argv) {
   int width, height;
   pixel_t * ellipse_in = loadPPM3(width, height, argv[1]);
   savePPM3(ellipse_in, width, height, "ellipse_out.ppm");
+  free(ellipse_in);
   return 0;
 }
